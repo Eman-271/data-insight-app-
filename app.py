@@ -1,4 +1,4 @@
-# Lab 4.1 reference version after Part 5, with a month filter
+# Lab 4.1 reference version after Part 6, with a monthly chart
 import pandas as pd
 import streamlit as st
 from google import genai
@@ -79,6 +79,13 @@ value_col = st.selectbox("Value", num_cols,
 totals = (filtered.groupby(group_col)[value_col].sum()
           .sort_values(ascending=False))
 st.bar_chart(totals, horizontal=True, sort=False)
+
+# Second chart: add up the Value column for each month
+if month_cols:
+    st.subheader("Monthly Totals")
+    monthly = (filtered.groupby(month_col)[value_col].sum()
+               .sort_index())
+    st.line_chart(monthly)
 
 
 @st.cache_data(ttl=3600)
