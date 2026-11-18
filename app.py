@@ -1,10 +1,10 @@
+# Lab 4.1 reference version after Part 5, with a month filter
 import pandas as pd
 import streamlit as st
 from google import genai
 from google.genai import types
 
 MODEL = "gemini-3.1-flash-lite"
-
 INSTRUCTION = (
     "You summarize data for a manager. Write three short bullet "
     "points using only the figures in the data supplied, and name "
@@ -16,7 +16,7 @@ st.title("Data Insight App")
 
 
 def read_key():
-    """Retrieves the API key from Streamlit secrets, or '' if none."""
+    """Retrieves the API key from Streamlit secrets, or "" if none."""
     try:
         return st.secrets["GEMINI_API_KEY"]
     except Exception:
@@ -36,98 +36,48 @@ if uploaded is None:
 
 # Data: read the file into a pandas DataFrame
 df = pd.read_csv(uploaded)
-
 st.write(f"The file has {len(df):,} rows and {df.shape[1]} columns.")
 st.dataframe(df, height=250)
 
 # List the number columns and the text columns of up to 30 values
 num_cols = df.select_dtypes("number").columns.tolist()
-
-text_cols = [
-    c for c in df.columns
-    if c not in num_cols and df[c].nunique() <= 30
-]
-
+text_cols = [c for c in df.columns
+             if c not in num_cols and df[c].nunique() <= 30]
 if not text_cols or not num_cols:
     st.warning("The file needs a text column and a number column.")
     st.stop()
 
-# ------------------------------------------------------------------
-# Filters
-# ------------------------------------------------------------------
+# Filter: keep the rows that have one of the selected values
 st.sidebar.header("Filter")
-
-# First filter: categorical values
 filter_col = st.sidebar.selectbox("Filter column", text_cols)
-
 values = sorted(df[filter_col].dropna().unique())
-chosen = st.sidebar.multiselect(
-    "Values to keep",
-    values,
-    default=values
-)
+chosen = st.sidebar.multiselect("Values to keep", values,
+                                default=values)
+filtered = df[df[filter_col].isin(chosen)]
 
-# Second filter: month range
-month_col = st.sidebar.selectbox(
-    "Month column",
-    [c for c in df.columns if df[c].dtype == "object"]
-)
-
-months = sorted(
-    df[month_col]
-    .dropna()
-    .astype(str)
-    .unique()
-)
-
-if months:
-    start_month, end_month = st.sidebar.select_slider(
-        "Month range",
-        options=months,
-        value=(months[0], months[-1])
-    )
-
-    month_mask = (
-        df[month_col].astype(str).between(start_month, end_month)
-    )
-else:
-    start_month = end_month = None
-    month_mask = pd.Series(True, index=df.index)
-
-# Apply both filters
-filtered = df[
-    df[filter_col].isin(chosen)
-    & month_mask
-]
-
+# Month range: find the columns with every value in the form 2025-01
+MONTH = r"\d{4}-\d{2}"
+month_cols = [c for c in df.columns if c not in num_cols
+              and df[c].astype(str).str.fullmatch(MONTH).all()]
+start, end = None, None
+if month_cols:
+    month_col = st.sidebar.selectbox("Month column", month_cols)
+    months = sorted(df[month_col].astype(str).unique())
+    start, end = st.sidebar.select_slider(
+        "Month range", options=months, value=(months[0], months[-1]))
+    months_kept = filtered[month_col].astype(str)
+    filtered = filtered[months_kept.between(start, end)]
 st.write(f"The filtered table has {len(filtered):,} rows.")
-st.dataframe(filtered, height=250)
 
-# ------------------------------------------------------------------
-# Chart
-# ------------------------------------------------------------------
+# Chart: add up the Value column for each group
 st.subheader("Chart")
-
 group_cols = [c for c in df.columns if c not in num_cols]
-
-group_col = st.selectbox(
-    "Group by",
-    group_cols,
-    index=min(1, len(group_cols) - 1)
-)
-
-value_col = st.selectbox(
-    "Value",
-    num_cols,
-    index=len(num_cols) - 1
-)
-
-totals = (
-    filtered.groupby(group_col)[value_col]
-    .sum()
-    .sort_values(ascending=False)
-)
-
+group_col = st.selectbox("Group by", group_cols,
+                         index=min(1, len(group_cols) - 1))
+value_col = st.selectbox("Value", num_cols,
+                         index=len(num_cols) - 1)
+totals = (filtered.groupby(group_col)[value_col].sum()
+          .sort_values(ascending=False))
 st.bar_chart(totals, horizontal=True, sort=False)
 
 
@@ -135,69 +85,40 @@ st.bar_chart(totals, horizontal=True, sort=False)
 def summarize(prompt, _key):
     """Submits the prompt, then returns the text and token counts."""
     client = genai.Client(api_key=_key)
-
     response = client.models.generate_content(
         model=MODEL,
         contents=prompt,
         config=types.GenerateContentConfig(
-            system_instruction=INSTRUCTION
-        ),
+            system_instruction=INSTRUCTION),
     )
-
     usage = response.usage_metadata
-
     # Add any thinking tokens, which are billed as output tokens
-    tokens_out = (
-        usage.candidates_token_count
-        + (usage.thoughts_token_count or 0)
-    )
-
-    return (
-        response.text,
-        usage.prompt_token_count,
-        tokens_out,
-    )
+    tokens_out = (usage.candidates_token_count
+                  + (usage.thoughts_token_count or 0))
+    return response.text, usage.prompt_token_count, tokens_out
 
 
-# ------------------------------------------------------------------
-# Model API
-# ------------------------------------------------------------------
+# Model API: request a summary only when the button is pressed
 st.subheader("Summary")
-
-send = st.radio(
-    "Data sent to the model",
-    ["Totals table", "Filtered rows"],
-    horizontal=True
-)
-
+send = st.radio("Data sent to the model",
+                ["Totals table", "Filtered rows"], horizontal=True)
 if send == "Totals table":
     data_text = totals.to_csv()
 else:
     data_text = filtered.to_csv(index=False)
-
-prompt = (
-    f"Filter: {filter_col} is one of {', '.join(chosen)}\n"
-    f"Month range: {start_month} to {end_month}\n"
-    f"Rows after filtering: {len(filtered)}\n\n"
-    f"{data_text}"
-)
+period = f"Months: {start} to {end}\n" if start else ""
+prompt = (f"Filter: {filter_col} is one of {', '.join(chosen)}\n"
+          f"{period}Rows after filtering: {len(filtered)}\n\n"
+          f"{data_text}")
 
 if st.button("Summarize with Gemini"):
     if not api_key:
         st.error("Add a Gemini API key first.")
     else:
         try:
-            text, tokens_in, tokens_out = summarize(
-                prompt,
-                api_key
-            )
-
+            text, tokens_in, tokens_out = summarize(prompt, api_key)
             st.markdown(text)
-
-            st.caption(
-                f"Input tokens: {tokens_in:,} · "
-                f"Output tokens: {tokens_out:,}"
-            )
-
+            st.caption(f"Input tokens: {tokens_in:,} · "
+                       f"Output tokens: {tokens_out:,}")
         except Exception as error:
             st.error(f"The request failed: {error}")
